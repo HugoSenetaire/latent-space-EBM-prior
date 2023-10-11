@@ -1,10 +1,6 @@
 import sys
 import os
 
-def set_gpu(gpu):
-    os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-    os.environ['CUDA_VISIBLE_DEVICES'] = gpu
-
 import argparse
 import json
 import random
@@ -31,7 +27,7 @@ import torchvision
 import torchvision.transforms as transforms
 
 import pygrid
-
+from plot_2d import get_all_energies, cut_samples, plot_contour
 
 ##########################################################################################################
 ## Parameters
@@ -43,32 +39,31 @@ def parse_args():
     parser.add_argument('--seed', default=1, type=int)
 
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
-    parser.add_argument('--gpu_multi', type=bool, default=True, help='mutli gpu')
 
-    parser.add_argument('--dataset', type=str, default='celeba128', choices=['svhn', 'celeba', 'celeba_crop', 'celeba32_sri', 'celeba64_sri', 'celeba64_sri_crop', 'celeba128'])
-    parser.add_argument('--img_size', default=128, type=int)
-    parser.add_argument('--batch_size', default=int(4*100), type=int)
+    parser.add_argument('--dataset', type=str, default='mnist', choices=['svhn', 'celeba', 'celeba_crop', 'celeba32_sri', 'celeba64_sri', 'celeba64_sri_crop'])
+    parser.add_argument('--img_size', default=28, type=int)
+    parser.add_argument('--batch_size', default=100, type=int)
 
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
-    parser.add_argument('--nc', default=3)
+    parser.add_argument('--nc', default=1)
 
     parser.add_argument('--nez', default=1, help='size of the output of ebm')
-    parser.add_argument('--ngf', default=128, help='feature dimensions of generator')
-    parser.add_argument('--ndf', default=1000, help='feature dimensions of ebm')
+    parser.add_argument('--ngf', default=64, help='feature dimensions of generator')
+    parser.add_argument('--ndf', default=200, help='feature dimensions of ebm')
 
     parser.add_argument('--e_prior_sig', type=float, default=1, help='prior of ebm z')
     parser.add_argument('--e_init_sig', type=float, default=1, help='sigma of initial distribution')
     parser.add_argument('--e_activation', type=str, default='gelu', choices=['gelu', 'lrelu', 'swish', 'mish'])
     parser.add_argument('--e_activation_leak', type=float, default=0.2)
     parser.add_argument('--e_energy_form', default='identity', choices=['identity', 'tanh', 'sigmoid', 'softplus'])
-    parser.add_argument('--e_l_steps', type=int, default=80, help='number of langevin steps')
+    parser.add_argument('--e_l_steps', type=int, default=60, help='number of langevin steps')
     parser.add_argument('--e_l_step_size', type=float, default=0.4, help='stepsize of langevin')
     parser.add_argument('--e_l_with_noise', default=True, type=bool, help='noise term of langevin')
     parser.add_argument('--e_sn', default=False, type=bool, help='spectral regularization')
 
     parser.add_argument('--g_llhd_sigma', type=float, default=0.3, help='prior of factor analysis')
     parser.add_argument('--g_activation', type=str, default='lrelu')
-    parser.add_argument('--g_l_steps', type=int, default=40, help='number of langevin steps')
+    parser.add_argument('--g_l_steps', type=int, default=20, help='number of langevin steps')
     parser.add_argument('--g_l_step_size', type=float, default=0.1, help='stepsize of langevin')
     parser.add_argument('--g_l_with_noise', default=True, type=bool, help='noise term of langevin')
     parser.add_argument('--g_batchnorm', default=False, type=bool, help='batch norm')
@@ -94,20 +89,17 @@ def parse_args():
     parser.add_argument('--e_beta1', default=0.5, type=float)
     parser.add_argument('--e_beta2', default=0.999, type=float)
 
-    parser.add_argument('--n_epochs', type=int, default=400, help='number of epochs to train for') # TODO(nijkamp): set to >100
+    parser.add_argument('--n_epochs', type=int, default=201, help='number of epochs to train for') # TODO(nijkamp): set to >100
     # parser.add_argument('--n_epochs', type=int, default=1, help='number of epochs to train for')
-    parser.add_argument('--n_printout', type=int, default=25, help='printout each n iterations')
+    parser.add_argument('--n_printout', type=int, default=500, help='printout each n iterations')
     parser.add_argument('--n_plot', type=int, default=1, help='plot each n epochs')
-    parser.add_argument('--n_ckpt', type=int, default=20, help='save ckpt each n epochs')
-    parser.add_argument('--n_metrics', type=int, default=399, help='fid each n epochs')
+    parser.add_argument('--n_ckpt', type=int, default=10, help='save ckpt each n epochs')
+    parser.add_argument('--n_metrics', type=int, default=50, help='fid each n epochs')
     # parser.add_argument('--n_metrics', type=int, default=1, help='fid each n epochs')
     parser.add_argument('--n_stats', type=int, default=1, help='stats each n epochs')
 
-    parser.add_argument('--n_fid_samples', type=int, default=30000) # TODO(nijkamp): we used 40,000 in short-run inference
+    parser.add_argument('--n_fid_samples', type=int, default=50000) # TODO(nijkamp): we used 40,000 in short-run inference
     # parser.add_argument('--n_fid_samples', type=int, default=1000)
-
-    parser.add_argument('--load_ckpt', type=str, default=None)
-    parser.add_argument('--eval', type=bool, default=False)
 
     return parser.parse_args()
 
@@ -115,32 +107,21 @@ def parse_args():
 def create_args_grid():
     # TODO add your enumeration of parameters here
 
-    # e_lr = [0.00002, 0.00005]
-    # e_l_step_size = [0.2, 0.4, 0.8]
-    # e_init_sig = [2.0, 3.0, 1.0]
-    # e_l_steps = [40, 60]
-
-    # g_llhd_sigma = [0.2, 0.3]
-    # g_lr = [0.0001, 0.00005]
-    # g_l_steps = [20, 40]
-    # g_activation = ['lrelu', 'gelu']
-
     e_lr = [0.00002]
     e_l_step_size = [0.4]
     e_init_sig = [1.0]
-    # e_l_steps = [40, 60]
-    e_l_steps = [60]
-    e_activation = ['gelu']
-    # e_activation = ['gelu', 'lrelu']
+    e_l_steps = [30,50,60]
+    e_activation = ['lrelu']
 
     g_llhd_sigma = [0.3]
     g_lr = [0.0001]
-    g_l_steps = [20, 40]
+    g_l_steps = [20]
     g_activation = ['lrelu']
 
-    ngf = [64, 128]
+    ngf = [64]
+    ndf = [200]
 
-    args_list = [e_lr, e_l_step_size, e_init_sig, e_l_steps, e_activation, g_llhd_sigma, g_lr, g_l_steps, g_activation, ngf]
+    args_list = [e_lr, e_l_step_size, e_init_sig, e_l_steps, e_activation, g_llhd_sigma, g_lr, g_l_steps, g_activation, ngf, ndf]
 
     opt_list = []
     for i, args in enumerate(itertools.product(*args_list)):
@@ -156,6 +137,7 @@ def create_args_grid():
             'g_l_steps': args[7],
             'g_activation': args[8],
             'ngf': args[9],
+            'ndf': args[10],
         }
         # TODO add your result metric here
         opt_result = {'fid_best': 0.0, 'fid': 0.0, 'mse': 0.0}
@@ -177,7 +159,7 @@ def update_job_result(job_opt, job_stats):
 
 def get_dataset(args):
 
-    fs_prefix = './' if not is_xsede() else '/pylon5/ac5fpjp/bopang/ebm_prior/'
+    fs_prefix = './' if not is_xsede() else '/pylon5/ac561ep/enijkamp/ebm_prior/'
 
     if args.dataset == 'svhn':
         import torchvision.transforms as transforms
@@ -192,6 +174,23 @@ def get_dataset(args):
                                              transforms.Resize(args.img_size),
                                              transforms.ToTensor(),
                                              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                               ]))
+        return ds_train, ds_val
+
+    if args.dataset == 'mnist':
+
+        import torchvision.transforms as transforms
+        ds_train = torchvision.datasets.MNIST(fs_prefix + 'data/{}'.format(args.dataset), download=True,
+                                             transform=transforms.Compose([
+                                             transforms.Resize(args.img_size),
+                                             transforms.ToTensor(),
+                                             transforms.Normalize((0.5,), (0.5,)),
+                               ]))
+        ds_val = torchvision.datasets.MNIST(fs_prefix + 'data/{}'.format(args.dataset), download=True, train=False,
+                                             transform=transforms.Compose([
+                                             transforms.Resize(args.img_size),
+                                             transforms.ToTensor(),
+                                             transforms.Normalize((0.5,), (0.5,)),
                                ]))
         return ds_train, ds_val
 
@@ -314,33 +313,6 @@ def get_dataset(args):
 
         return ds_train, ds_val
 
-    elif args.dataset == 'celeba128':
-
-        # wget https://www.dropbox.com/s/9omncogiyaul54d/celeba_40000_64_center.pickle?dl=0
-
-        data_path = fs_prefix + 'data/{}/img_align_celeba'.format(args.dataset)
-        cache_pkl = fs_prefix + 'data/{}/celeba_30000_128.pickle'.format(args.dataset)
-
-        from data import SingleImagesFolderMTDataset
-        import PIL
-        import torchvision.transforms as transforms
-
-        ds_train = SingleImagesFolderMTDataset(root=data_path,
-                                            cache=cache_pkl,
-                                            num_images=30000,
-                                            transform=transforms.Compose([
-                                                PIL.Image.fromarray,
-                                                transforms.Resize(args.img_size),
-                                                transforms.CenterCrop(args.img_size),
-                                                transforms.ToTensor(),
-                                                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                            ]))
-
-        # TODO(nijkamp): create ds_val pickle
-        ds_val = ds_train
-
-        return ds_train, ds_val
-
     else:
         raise ValueError(args.dataset)
 
@@ -382,130 +354,81 @@ def weights_init_xavier(m):
 
 
 class _netG(nn.Module):
-    def __init__(self, args):
+    # def __init__(self, args):
+        # super().__init__()
+
+        # f = get_activation(args.g_activation, args)
+
+        # self.gen = nn.Sequential(
+        #     nn.ConvTranspose2d(args.nz, args.ngf*8, 4, 1, 0, bias = not args.g_batchnorm),
+        #     nn.BatchNorm2d(args.ngf*8) if args.g_batchnorm else nn.Identity(),
+        #     f,
+
+        #     nn.ConvTranspose2d(args.ngf*8, args.ngf*4, 4, 2, 1, bias = not args.g_batchnorm),
+        #     nn.BatchNorm2d(args.ngf*4) if args.g_batchnorm else nn.Identity(),
+        #     f,
+
+        #     nn.ConvTranspose2d(args.ngf*4, args.ngf*2, 4, 2, 1, bias = not args.g_batchnorm),
+        #     nn.BatchNorm2d(args.ngf*2) if args.g_batchnorm else nn.Identity(),
+        #     f,
+
+        #     #nn.ConvTranspose2d(args.ngf*2, args.ngf*1, 4, 2, 1, bias = not args.g_batchnorm),
+        #     #nn.BatchNorm2d(args.ngf*1) if args.g_batchnorm else nn.Identity(),
+        #     #f,
+
+        #     nn.ConvTranspose2d(args.ngf*2, args.nc, 4, 2, 1),
+        #     nn.Tanh()
+        # )
+
+    def __init__(self,args
+                 ):
         super().__init__()
-
-        f = get_activation(args.g_activation, args)
-
-        self.gen = nn.Sequential(
-            nn.ConvTranspose2d(args.nz, args.ngf*16, 4, 1, 0, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.ngf*4) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*16, args.ngf*8, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.gnf*4) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*8, args.ngf*4, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.gnf*4) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*4, args.ngf*2, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.gnf*2) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*2, args.ngf*1, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.ngf*1) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*1, args.nc, 4, 2, 1),
-            nn.Tanh()
-        )
-
+        ngf = args.ngf
+        nc = args.nc
+        nz = args.nz
+        self.gen = nn.Sequential(nn.ConvTranspose2d(nz, ngf*8, 4, 1, 0), nn.LeakyReLU(),
+            nn.ConvTranspose2d(ngf*8, ngf*4, 3, 2, 1), nn.LeakyReLU(),
+            nn.ConvTranspose2d(ngf*4, ngf*2, 4, 2, 1), nn.LeakyReLU(),
+            nn.ConvTranspose2d(ngf*2, nc, 4, 2, 1), )
     def forward(self, z):
         return self.gen(z)
-
+    
+     
 
 class _netE(nn.Module):
+#  def __init__(self, args):
+#         super().__init__()
+
+#         self.args = args
+
+#         apply_sn = sn if args.e_sn else lambda x: x
+
+#         f = get_activation(args.e_activation, args)
+
+#         self.ebm = nn.Sequential(
+#             apply_sn(nn.Linear(args.nz, args.ndf)),
+#             f,
+
+#             apply_sn(nn.Linear(args.ndf, args.ndf)),
+#             f,
+
+#             apply_sn(nn.Linear(args.ndf, args.nez))
+#         )
     def __init__(self, args):
         super().__init__()
-
         self.args = args
-
-        apply_sn = sn if args.e_sn else lambda x: x
-
-        f = get_activation(args.e_activation, args)
-
-        self.ebm = nn.Sequential(
-            apply_sn(nn.Linear(args.nz, args.ndf)),
-            f,
-
-            apply_sn(nn.Linear(args.ndf, args.ndf)),
-            f,
-
-            apply_sn(nn.Linear(args.ndf, args.nez))
-        )
+        nz = args.nz
+        ndf = args.ndf
+        nez = args.nez
+        self.ebm = nn.Sequential(nn.Linear(nz, ndf), nn.LeakyReLU(0.2),
+            nn.Linear(ndf, ndf), nn.LeakyReLU(0.2),
+            nn.Linear(ndf, ndf), nn.LeakyReLU(0.2),
+            nn.Linear(ndf, nez, bias=False))
+        self.log_partition = nn.Parameter(torch.tensor(0.,),requires_grad=True)
 
     def forward(self, z):
-        return self.ebm(z.squeeze()).view(-1, self.args.nez, 1, 1)
-
-
-class _netWrapper(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-
-        self.args = args
-
-        self.netG = _netG(args)
-        self.netE = _netE(args)
-
-        self.netG.apply(weights_init_xavier)
-        self.netE.apply(weights_init_xavier)
-
-    def sample_langevin_prior_z(self, z, netE, args, verbose=False):
-        z = z.clone().detach()
-        z.requires_grad = True
-        for i in range(args.e_l_steps):
-            en = netE(z)
-            z_grad = torch.autograd.grad(en.sum(), z)[0]
-
-            z.data = z.data - 0.5 * args.e_l_step_size * args.e_l_step_size * (z_grad + 1.0 / (args.e_prior_sig * args.e_prior_sig) * z.data)
-            if args.e_l_with_noise:
-                z.data += args.e_l_step_size * torch.randn_like(z).data
-
-            if (i % 5 == 0 or i == args.e_l_steps - 1) and verbose:
-                print('Langevin prior {:3d}/{:3d}: energy={:8.3f}'.format(i+1, args.e_l_steps, en.sum().item()))
-
-            z_grad_norm = z_grad.view(args.batch_size, -1).norm(dim=1).mean()
-
-        return z.detach(), z_grad_norm
-
-    def sample_langevin_post_z(self, z, x, netG, netE, args, verbose=False):
-
-        mse = nn.MSELoss(reduction='sum')
-
-        z = z.clone().detach()
-        z.requires_grad = True
-        for i in range(args.g_l_steps):
-            x_hat = netG(z)
-            g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * mse(x_hat, x)
-            z_grad_g = torch.autograd.grad(g_log_lkhd, z)[0]
-
-            en = netE(z)
-            z_grad_e = torch.autograd.grad(en.sum(), z)[0]
-
-            z.data = z.data - 0.5 * args.g_l_step_size * args.g_l_step_size * (z_grad_g + z_grad_e + 1.0 / (args.e_prior_sig * args.e_prior_sig) * z.data)
-            if args.g_l_with_noise:
-                z.data += args.g_l_step_size * torch.randn_like(z).data
-
-            if (i % 5 == 0 or i == args.g_l_steps - 1) and verbose:
-                print('Langevin posterior {:3d}/{:3d}: MSE={:8.3f}'.format(i+1, args.g_l_steps, g_log_lkhd.item()))
-
-            z_grad_g_grad_norm = z_grad_g.view(args.batch_size, -1).norm(dim=1).mean()
-            z_grad_e_grad_norm = z_grad_e.view(args.batch_size, -1).norm(dim=1).mean()
-
-        return z.detach(), z_grad_g_grad_norm, z_grad_e_grad_norm
-
-    def forward(self, z, x=None, prior=True):
-        # print('z', z.shape)
-        # if x is not None:
-        #    print('x', x.shape)
-
-        if prior:
-            return self.sample_langevin_prior_z(z, self.netE, self.args)[0]
-        else:
-            return self.sample_langevin_post_z(z, x, self.netG, self.netE, self.args)[0]
-
+        return (self.ebm(z.squeeze())+self.log_partition).view(-1, self.args.nez, 1, 1)
+        
 
 ##########################################################################################################
 
@@ -518,7 +441,7 @@ def train(args_job, output_dir_job, output_dir, return_dict):
     args = pygrid.overwrite_opt(args, args_job)
     args = to_named_dict(args)
 
-    # set_gpu(args.device)
+    set_gpu(args.device)
     set_cuda(deterministic=args.gpu_deterministic)
     set_seed(args.seed)
 
@@ -543,9 +466,8 @@ def train(args_job, output_dir_job, output_dir, return_dict):
 
     assert len(ds_train) >= args.n_fid_samples
     to_range_0_1 = lambda x: (x + 1.) / 2.
-    # ds_fid = np.array(torch.stack([to_range_0_1(torch.tensor(ds_train[i][0])) for i in range(args.n_fid_samples)]).cpu().numpy())
-    # logger.info('ds_fid.shape={}'.format(ds_fid.shape))
-    ds_fid = []
+    ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())
+    logger.info('ds_fid.shape={}'.format(ds_fid.shape))
 
     def plot(p, x):
         return torchvision.utils.save_image(torch.clamp(x, -1., 1.), p, normalize=True, nrow=int(np.sqrt(args.batch_size)))
@@ -553,16 +475,25 @@ def train(args_job, output_dir_job, output_dir, return_dict):
     #################################################
     ## model
 
-    if args.gpu_multi:
-        net = torch.nn.DataParallel(_netWrapper(args).to(device), device_ids=[0,1,2,3])
-    else:
-        net = _netWrapper(args).to(device)
+    netG = _netG(args)
+    netE = _netE(args)
+
+    netG.apply(weights_init_xavier)
+    netE.apply(weights_init_xavier)
+
+    netG = netG.to(device)
+    netE = netE.to(device)
+
+    logger.info(netG)
+    logger.info(netE)
 
     def eval_flag():
-        net.eval()
+        netG.eval()
+        netE.eval()
 
     def train_flag():
-        net.train()
+        netG.train()
+        netE.train()
 
     def energy(score):
         if args.e_energy_form == 'tanh':
@@ -580,36 +511,59 @@ def train(args_job, output_dir_job, output_dir, return_dict):
     #################################################
     ## optimizer
 
-    if args.gpu_multi:
-        net_resolve = net.module
-    else:
-        net_resolve = net
-
-    optE = torch.optim.Adam(net_resolve.netE.parameters(), lr=args.e_lr, weight_decay=args.e_decay, betas=(args.e_beta1, args.e_beta2))
-    optG = torch.optim.Adam(net_resolve.netG.parameters(), lr=args.g_lr, weight_decay=args.g_decay, betas=(args.g_beta1, args.g_beta2))
+    optE = torch.optim.Adam(netE.parameters(), lr=args.e_lr, weight_decay=args.e_decay, betas=(args.e_beta1, args.e_beta2))
+    optG = torch.optim.Adam(netG.parameters(), lr=args.g_lr, weight_decay=args.g_decay, betas=(args.g_beta1, args.g_beta2))
 
     lr_scheduleE = torch.optim.lr_scheduler.ExponentialLR(optE, args.e_gamma)
     lr_scheduleG = torch.optim.lr_scheduler.ExponentialLR(optG, args.g_gamma)
-
-    #################################################
-    ## ckpt
-
-    epoch_ckpt = 0
-
-    if args.load_ckpt:
-        ckpt = torch.load(args.load_ckpt, map_location='cuda:{}'.format(args.device))
-        net_resolve.netE.load_state_dict(ckpt['netE'])
-        optE.load_state_dict(ckpt['optE'])
-        net_resolve.netG.load_state_dict(ckpt['netG'])
-        optG.load_state_dict(ckpt['optG'])
-        epoch_ckpt = 76
-
 
     #################################################
     ## sampling
 
     def sample_p_0(n=args.batch_size, sig=args.e_init_sig):
         return sig * torch.randn(*[n, args.nz, 1, 1]).to(device)
+
+    def sample_langevin_prior_z(z, netE, verbose=False):
+        z = z.clone().detach()
+        z.requires_grad = True
+        for i in range(args.e_l_steps):
+            en = energy(netE(z))
+            z_grad = torch.autograd.grad(en.sum(), z)[0]
+
+            z.data = z.data - 0.5 * args.e_l_step_size * args.e_l_step_size * (z_grad + 1.0 / (args.e_prior_sig * args.e_prior_sig) * z.data)
+            if args.e_l_with_noise:
+                z.data += args.e_l_step_size * torch.randn_like(z).data
+
+            if (i % 5 == 0 or i == args.e_l_steps - 1) and verbose:
+                logger.info('Langevin prior {:3d}/{:3d}: energy={:8.3f}'.format(i+1, args.e_l_steps, en.mean().item()))
+
+            z_grad_norm = z_grad.view(z.shape[0], -1).norm(dim=1).mean()
+
+        return z.detach(), z_grad_norm
+
+    def sample_langevin_post_z(z, x, netG, netE, verbose=False):
+        z = z.clone().detach()
+        z.requires_grad = True
+        for i in range(args.g_l_steps):
+            x_hat = netG(z)
+            g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * mse(x_hat, x)
+            z_grad_g = torch.autograd.grad(g_log_lkhd, z)[0]
+
+            en = energy(netE(z))
+            z_grad_e = torch.autograd.grad(en.sum(), z)[0]
+
+            z.data = z.data - 0.5 * args.g_l_step_size * args.g_l_step_size * (z_grad_g + z_grad_e + 1.0 / (args.e_prior_sig * args.e_prior_sig) * z.data)
+            if args.g_l_with_noise:
+                z.data += args.g_l_step_size * torch.randn_like(z).data
+
+            if (i % 5 == 0 or i == args.g_l_steps - 1) and verbose:
+                logger.info('Langevin posterior {:3d}/{:3d}: MSE={:8.3f}'.format(i+1, args.g_l_steps, g_log_lkhd.item()))
+
+            z_grad_g_grad_norm = z_grad_g.view(x.shape[0], -1).norm(dim=1).mean()
+            z_grad_e_grad_norm = z_grad_e.view(x.shape[0], -1).norm(dim=1).mean()
+
+        return z.detach(), z_grad_g_grad_norm, z_grad_e_grad_norm
+
 
     #################################################
     ## fid
@@ -625,12 +579,11 @@ def train(args_job, output_dir_job, output_dir, return_dict):
 
             def sample_x():
                 z_0 = sample_p_0().to(device)
-                z_k = net(Variable(z_0), prior=True)
-                x_samples = to_range_0_1(net_resolve.netG(z_k)).clamp(min=0., max=1.).detach().cpu()
+                z_k = sample_langevin_prior_z(Variable(z_0), netE)[0]
+                x_samples = to_range_0_1(netG(z_k)).clamp(min=0., max=1.).detach().cpu()
                 return x_samples
             x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
-            fid = compute_fid_nchw(args, ds_fid[:n], x_samples)
-
+            fid = compute_fid_nchw(args, ds_fid, x_samples)
             return fid
 
         except Exception as e:
@@ -651,11 +604,13 @@ def train(args_job, output_dir_job, output_dir, return_dict):
     fid = 0.0
     fid_best = math.inf
 
-    def normalize(x):
-        return ((x.float() / 255.) - .5) * 2.
-
     z_fixed = sample_p_0()
-    x_fixed = normalize(next(iter(dataloader_train))[0]).to(device)
+    x_fixed = next(iter(dataloader_train))[0].to(device)
+    x_fixed_larged = next(iter(dataloader_train))[0].to(device)
+    while len(x_fixed_larged)<1000:
+        x_fixed_larged = torch.cat([x_fixed_larged, next(iter(dataloader_train))[0].to(device)],dim=0)
+    x_fixed_larged = x_fixed_larged[:1000]
+
 
     stats = {
         'loss_g':[],
@@ -671,13 +626,78 @@ def train(args_job, output_dir_job, output_dir, return_dict):
     }
     interval = []
 
-    for epoch in range(epoch_ckpt, args.n_epochs):
+    for epoch in range(args.n_epochs):
 
         for i, (x, y) in enumerate(dataloader_train, 0):
+            if i % 200 == 0:
+                logger.info("Plot images at epoch {} step {} in dir {}".format(epoch, i, output_dir))
+                batch_size_fixed = x_fixed.shape[0]
+                print(x_fixed.shape)
+
+                z_g_0 = sample_p_0(n=batch_size_fixed)
+                z_e_0 = sample_p_0(n=batch_size_fixed)
+
+                z_g_k, z_g_grad_norm, z_e_grad_norm = sample_langevin_post_z(Variable(z_g_0), x_fixed, netG, netE)
+                z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE)
+
+                with torch.no_grad():
+                    plot('{}/samples/{:>06d}_{:>06d}_x_pos_fixed.png'.format(output_dir, epoch, i), x_fixed)
+                    plot('{}/samples/{:>06d}_{:>06d}_x_z_pos.png'.format(output_dir, epoch, i), netG(z_g_k))
+                    plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_0.png'.format(output_dir, epoch, i), netG(z_e_0))
+                    plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_k.png'.format(output_dir, epoch, i), netG(z_e_k))
+                    plot('{}/samples/{:>06d}_{:>06d}_x_z_fixed.png'.format(output_dir, epoch, i), netG(z_fixed))
+
+                if args.nz == 2:
+                    logger.info("Plot contour at epoch {} step {} in dir {}".format(epoch, i, output_dir))
+
+                    
+                    z_g_0_aux = sample_p_0(n=1000)
+                    z_e_0_aux = sample_p_0(n=1000)
+
+                    z_g_k_aux, z_g_grad_norm_aux, z_e_grad_norm_aux = sample_langevin_post_z(Variable(z_g_0_aux), x_fixed_larged, netG, netE)
+                    z_e_k_aux, z_e_k_aux_grad_norm = sample_langevin_prior_z(Variable(z_e_0_aux), netE)
+
+                    with torch.no_grad():
+                        energy_list_small_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-3, max_x=3,)
+
+                        samples_aux = cut_samples(z_e_0_aux, min_x=-3, max_x=3)
+                        plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution SC")
+                        
+                        samples_aux = cut_samples(z_e_k_aux, min_x=-3, max_x=3)
+                        plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior SC")
+
+                        samples_aux = cut_samples(z_g_k_aux, min_x=-3, max_x=3)
+                        plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior SC")
+
+
+                        energy_list_large_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-10, max_x=10)
+                        samples_aux = cut_samples(z_e_0_aux, min_x=-10, max_x=10)
+                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution LC")
+                        
+                        samples_aux = cut_samples(z_e_k_aux, min_x=-10, max_x=10)
+                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior LC")
+
+                        samples_aux = cut_samples(z_g_k_aux, min_x=-10, max_x=10)
+                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior LC")
+
+
+                        energy_list_large_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-30, max_x=30)
+                        samples_aux = cut_samples(z_e_0_aux, min_x=-30, max_x=30)
+                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution XLC")
+                        
+                        samples_aux = cut_samples(z_e_k_aux, min_x=-30, max_x=30)
+                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior XLC")
+
+                        samples_aux = cut_samples(z_g_k_aux, min_x=-30, max_x=30)
+                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior XLC")
+
+
+                            
+                        
 
             train_flag()
 
-            x = normalize(x).to(device)
+            x = x.to(device)
             batch_size = x.shape[0]
 
             # Initialize chains
@@ -685,38 +705,40 @@ def train(args_job, output_dir_job, output_dir, return_dict):
             z_e_0 = sample_p_0(n=batch_size)
 
             # Langevin posterior and prior
-            z_g_k = net(Variable(z_g_0), x, prior=False)
-            z_e_k = net(Variable(z_e_0), prior=True)
+            z_g_k, z_g_grad_norm, z_e_grad_norm = sample_langevin_post_z(Variable(z_g_0), x, netG, netE, verbose=(i==0))
+            z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE, verbose=(i==0))
 
             # Learn generator
             optG.zero_grad()
-            x_hat = net_resolve.netG(z_g_k.detach())
+            x_hat = netG(z_g_k.detach())
             loss_g = mse(x_hat, x) / batch_size
             loss_g.backward()
-            # grad_norm_g = get_grad_norm(net.netG.parameters())
-            # if args.g_is_grad_clamp:
-            #    torch.nn.utils.clip_grad_norm(net.netG.parameters(), opt.g_max_norm)
+            grad_norm_g = get_grad_norm(netG.parameters())
+            if args.g_is_grad_clamp:
+                assert False
+                torch.nn.utils.clip_grad_norm(netG.parameters(), opt.g_max_norm)
             optG.step()
 
             # Learn prior EBM
             optE.zero_grad()
-            en_neg = energy(net_resolve.netE(z_e_k.detach())).mean() # TODO(nijkamp): why mean() here and in Langevin sum() over energy? constant is absorbed into Adam adaptive lr
-            en_pos = energy(net_resolve.netE(z_g_k.detach())).mean()
+            en_neg = energy(netE(z_e_k.detach())).mean() # TODO(nijkamp): why mean() here and in Langevin sum() over energy? constant is absorbed into Adam adaptive lr
+            en_pos = energy(netE(z_g_k.detach())).mean()
             loss_e = en_pos - en_neg
             loss_e.backward()
-            # grad_norm_e = get_grad_norm(net.netE.parameters())
-            # if args.e_is_grad_clamp:
-            #    torch.nn.utils.clip_grad_norm_(net.netE.parameters(), args.e_max_norm)
+            grad_norm_e = get_grad_norm(netE.parameters())
+            if args.e_is_grad_clamp:
+                assert False
+                torch.nn.utils.clip_grad_norm_(netE.parameters(), args.e_max_norm)
             optE.step()
 
             # Printout
             if i % args.n_printout == 0:
                 with torch.no_grad():
-                    x_0 = net_resolve.netG(z_e_0)
-                    x_k = net_resolve.netG(z_e_k)
+                    x_0 = netG(z_e_0)
+                    x_k = netG(z_e_k)
 
-                    en_neg_2 = energy(net_resolve.netE(z_e_k)).mean()
-                    en_pos_2 = energy(net_resolve.netE(z_g_k)).mean()
+                    en_neg_2 = energy(netE(z_e_k)).mean()
+                    en_pos_2 = energy(netE(z_g_k)).mean()
 
                     prior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_e_k.mean(), z_e_k.std(), z_e_k.abs().max())
                     posterior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_g_k.mean(), z_g_k.std(), z_g_k.abs().max())
@@ -726,6 +748,11 @@ def train(args_job, output_dir_job, output_dir, return_dict):
                         'loss_e={:8.3f}, '.format(loss_e) +
                         'en_pos=[{:9.4f}, {:9.4f}, {:9.4f}], '.format(en_pos, en_pos_2, en_pos_2-en_pos) +
                         'en_neg=[{:9.4f}, {:9.4f}, {:9.4f}], '.format(en_neg, en_neg_2, en_neg_2-en_neg) +
+                        '|grad_g|={:8.2f}, '.format(grad_norm_g) +
+                        '|grad_e|={:8.2f}, '.format(grad_norm_e) +
+                        '|z_g_grad|={:7.3f}, '.format(z_g_grad_norm) +
+                        '|z_e_grad|={:7.3f}, '.format(z_e_grad_norm) +
+                        '|z_e_k_grad|={:7.3f}, '.format(z_e_k_grad_norm) +
                         '|z_g_0|={:6.2f}, '.format(z_g_0.view(batch_size, -1).norm(dim=1).mean()) +
                         '|z_g_k|={:6.2f}, '.format(z_g_k.view(batch_size, -1).norm(dim=1).mean()) +
                         '|z_e_0|={:6.2f}, '.format(z_e_0.view(batch_size, -1).norm(dim=1).mean()) +
@@ -748,18 +775,18 @@ def train(args_job, output_dir_job, output_dir, return_dict):
             stats['loss_e'].append(loss_e.item())
             stats['en_neg'].append(en_neg.data.item())
             stats['en_pos'].append(en_pos.data.item())
-            stats['grad_norm_g'].append(0)
-            stats['grad_norm_e'].append(0)
-            stats['z_g_grad_norm'].append(0)
-            stats['z_e_grad_norm'].append(0)
-            stats['z_e_k_grad_norm'].append(0)
+            stats['grad_norm_g'].append(grad_norm_g)
+            stats['grad_norm_e'].append(grad_norm_e)
+            stats['z_g_grad_norm'].append(z_g_grad_norm.item())
+            stats['z_e_grad_norm'].append(z_e_grad_norm.item())
+            stats['z_e_k_grad_norm'].append(z_e_k_grad_norm.item())
             stats['fid'].append(fid)
             interval.append(epoch + 1)
             plot_stats(output_dir, stats, interval)
 
         # Metrics
-        if False and epoch % args.n_metrics == 0:
-            fid = get_fid(n=len(ds_fid))
+        if epoch > 0 and epoch % args.n_metrics == 0:
+            fid = get_fid(n=args.n_fid_samples)
             if fid < fid_best:
                 fid_best = fid
             logger.info('fid={}'.format(fid))
@@ -772,34 +799,35 @@ def train(args_job, output_dir_job, output_dir, return_dict):
             z_g_0 = sample_p_0(n=batch_size_fixed)
             z_e_0 = sample_p_0(n=batch_size_fixed)
 
-            z_g_k = net(Variable(z_g_0), x_fixed)
-            z_e_k = net(Variable(z_e_0), prior=True)
+            z_g_k, z_g_grad_norm, z_e_grad_norm = sample_langevin_post_z(Variable(z_g_0), x_fixed, netG, netE)
+            z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE)
 
             with torch.no_grad():
-                plot('{}/samples/{:>06d}_{:>06d}_x_fixed.png'.format(output_dir, epoch, i), x_fixed)
-                plot('{}/samples/{:>06d}_{:>06d}_x_fixed_hat.png'.format(output_dir, epoch, i), net_resolve.netG(z_g_k))
-                plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_0.png'.format(output_dir, epoch, i), net_resolve.netG(z_e_0))
-                plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_k.png'.format(output_dir, epoch, i), net_resolve.netG(z_e_k))
-                plot('{}/samples/{:>06d}_{:>06d}_x_z_fixed.png'.format(output_dir, epoch, i), net_resolve.netG(z_fixed))
+                plot('{}/samples/{:>06d}_{:>06d}_x_pos_fixed.png'.format(output_dir, epoch, i), x_fixed)
+                plot('{}/samples/{:>06d}_{:>06d}_x_z_pos.png'.format(output_dir, epoch, i), netG(z_g_k))
+                plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_0.png'.format(output_dir, epoch, i), netG(z_e_0))
+                plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_k.png'.format(output_dir, epoch, i), netG(z_e_k))
+                plot('{}/samples/{:>06d}_{:>06d}_x_z_fixed.png'.format(output_dir, epoch, i), netG(z_fixed))
 
         # Ckpt
         if epoch > 0 and epoch % args.n_ckpt == 0:
             save_dict = {
                 'epoch': epoch,
-                'net': net.state_dict(),
+                'netE': netE.state_dict(),
                 'optE': optE.state_dict(),
+                'netG': netG.state_dict(),
                 'optG': optG.state_dict(),
             }
             torch.save(save_dict, '{}/ckpt/ckpt_{:>06d}.pth'.format(output_dir, epoch))
 
         # Early exit
-        # if False and epoch > 10 and loss_g > 500:
-        #     logger.info('early exit condition 1: epoch > 10 and loss_g > 500')
-        #     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
-        #     return
+        # if epoch > 10 and loss_g > 300:
+            # logger.info('early exit condition 1: epoch > 10 and loss_g > 300')
+            # return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
+            # return
 
-        # if False and epoch > 20 and fid > 100:
-        #     logger.info('early exit condition 2: epoch > 20 and fid > 100')
+        # if epoch > 40 and fid > 100:
+        #     logger.info('early exit condition 2: epoch > 40 and fid > 100')
         #     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
         #     return
 
@@ -858,7 +886,7 @@ def compute_fid(args, x_data, x_samples, use_cpu=False):
             config.gpu_options.visible_device_list = str(args.device)
             return tf.Session(config=config)
 
-    path = None if not is_xsede() else '/pylon5/ac5fpjp/bopang/ebm_prior/'
+    path = '/tmp' if not is_xsede() else '/pylon5/ac561ep/enijkamp/inception'
 
     fid = fid_score(create_session, x_data, x_samples, path, cpu_only=use_cpu)
 
@@ -1015,7 +1043,7 @@ def main():
 
     print_gpus()
 
-    fs_prefix = './'
+    fs_prefix = './' 
 
     # preamble
     exp_id = get_exp_id(__file__)
