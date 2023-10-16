@@ -28,6 +28,9 @@ import torchvision.transforms as transforms
 
 import pygrid
 from plot_2d import get_all_energies, cut_samples, plot_contour
+import wandb
+from omegaconf import OmegaConf
+
 
 ##########################################################################################################
 ## Parameters
@@ -625,176 +628,37 @@ def train(args_job, output_dir_job, output_dir, return_dict):
         'fid':[],
     }
     interval = []
+    
+    logger_res = wandb.init(
+            project="LatentEBM",
+            config=args,
+            dir=output_dir,
+            name= time.strftime("%Y%m%d-%H%M%S"),
+        )
+    nb_iter = args.n_epochs*len(dataloader_train)
+    iterator = iter(dataloader_train)
+    epoch = 0
+    import tqdm
+    for i in tqdm.tqdm(range(nb_iter)):
+        try :
+            end_epoch = False
+            x = next(iterator)[0]
+        except StopIteration:
+            iterator = iter(dataloader_train)
+            epoch+=1
+            end_epoch = True
 
-    for epoch in range(args.n_epochs):
+            # Schedule
+            lr_scheduleE.step(epoch=epoch)
+            lr_scheduleG.step(epoch=epoch)
 
-        for i, (x, y) in enumerate(dataloader_train, 0):
-            if i % 200 == 0:
-                logger.info("Plot images at epoch {} step {} in dir {}".format(epoch, i, output_dir))
-                batch_size_fixed = x_fixed.shape[0]
-                print(x_fixed.shape)
-
-                z_g_0 = sample_p_0(n=batch_size_fixed)
-                z_e_0 = sample_p_0(n=batch_size_fixed)
-
-                z_g_k, z_g_grad_norm, z_e_grad_norm = sample_langevin_post_z(Variable(z_g_0), x_fixed, netG, netE)
-                z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE)
-
-                with torch.no_grad():
-                    plot('{}/samples/{:>06d}_{:>06d}_x_pos_fixed.png'.format(output_dir, epoch, i), x_fixed)
-                    plot('{}/samples/{:>06d}_{:>06d}_x_z_pos.png'.format(output_dir, epoch, i), netG(z_g_k))
-                    plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_0.png'.format(output_dir, epoch, i), netG(z_e_0))
-                    plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_k.png'.format(output_dir, epoch, i), netG(z_e_k))
-                    plot('{}/samples/{:>06d}_{:>06d}_x_z_fixed.png'.format(output_dir, epoch, i), netG(z_fixed))
-
-                if args.nz == 2:
-                    logger.info("Plot contour at epoch {} step {} in dir {}".format(epoch, i, output_dir))
-
-                    
-                    z_g_0_aux = sample_p_0(n=1000)
-                    z_e_0_aux = sample_p_0(n=1000)
-
-                    z_g_k_aux, z_g_grad_norm_aux, z_e_grad_norm_aux = sample_langevin_post_z(Variable(z_g_0_aux), x_fixed_larged, netG, netE)
-                    z_e_k_aux, z_e_k_aux_grad_norm = sample_langevin_prior_z(Variable(z_e_0_aux), netE)
-
-                    with torch.no_grad():
-                        energy_list_small_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-3, max_x=3,)
-
-                        samples_aux = cut_samples(z_e_0_aux, min_x=-3, max_x=3)
-                        plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution SC")
-                        
-                        samples_aux = cut_samples(z_e_k_aux, min_x=-3, max_x=3)
-                        plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior SC")
-
-                        samples_aux = cut_samples(z_g_k_aux, min_x=-3, max_x=3)
-                        plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior SC")
-
-
-                        energy_list_large_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-10, max_x=10)
-                        samples_aux = cut_samples(z_e_0_aux, min_x=-10, max_x=10)
-                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution LC")
-                        
-                        samples_aux = cut_samples(z_e_k_aux, min_x=-10, max_x=10)
-                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior LC")
-
-                        samples_aux = cut_samples(z_g_k_aux, min_x=-10, max_x=10)
-                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior LC")
-
-
-                        energy_list_large_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-30, max_x=30)
-                        samples_aux = cut_samples(z_e_0_aux, min_x=-30, max_x=30)
-                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution XLC")
-                        
-                        samples_aux = cut_samples(z_e_k_aux, min_x=-30, max_x=30)
-                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior XLC")
-
-                        samples_aux = cut_samples(z_g_k_aux, min_x=-30, max_x=30)
-                        plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior XLC")
-
-
-                            
-                        
-
-            train_flag()
-
-            x = x.to(device)
-            batch_size = x.shape[0]
-
-            # Initialize chains
-            z_g_0 = sample_p_0(n=batch_size)
-            z_e_0 = sample_p_0(n=batch_size)
-
-            # Langevin posterior and prior
-            z_g_k, z_g_grad_norm, z_e_grad_norm = sample_langevin_post_z(Variable(z_g_0), x, netG, netE, verbose=(i==0))
-            z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE, verbose=(i==0))
-
-            # Learn generator
-            optG.zero_grad()
-            x_hat = netG(z_g_k.detach())
-            loss_g = mse(x_hat, x) / batch_size
-            loss_g.backward()
-            grad_norm_g = get_grad_norm(netG.parameters())
-            if args.g_is_grad_clamp:
-                assert False
-                torch.nn.utils.clip_grad_norm(netG.parameters(), opt.g_max_norm)
-            optG.step()
-
-            # Learn prior EBM
-            optE.zero_grad()
-            en_neg = energy(netE(z_e_k.detach())).mean() # TODO(nijkamp): why mean() here and in Langevin sum() over energy? constant is absorbed into Adam adaptive lr
-            en_pos = energy(netE(z_g_k.detach())).mean()
-            loss_e = en_pos - en_neg
-            loss_e.backward()
-            grad_norm_e = get_grad_norm(netE.parameters())
-            if args.e_is_grad_clamp:
-                assert False
-                torch.nn.utils.clip_grad_norm_(netE.parameters(), args.e_max_norm)
-            optE.step()
-
-            # Printout
-            if i % args.n_printout == 0:
-                with torch.no_grad():
-                    x_0 = netG(z_e_0)
-                    x_k = netG(z_e_k)
-
-                    en_neg_2 = energy(netE(z_e_k)).mean()
-                    en_pos_2 = energy(netE(z_g_k)).mean()
-
-                    prior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_e_k.mean(), z_e_k.std(), z_e_k.abs().max())
-                    posterior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_g_k.mean(), z_g_k.std(), z_g_k.abs().max())
-
-                    logger.info('{} {:5d}/{:5d} {:5d}/{:5d} '.format(job_id, epoch, args.n_epochs, i, len(dataloader_train)) +
-                        'loss_g={:8.3f}, '.format(loss_g) +
-                        'loss_e={:8.3f}, '.format(loss_e) +
-                        'en_pos=[{:9.4f}, {:9.4f}, {:9.4f}], '.format(en_pos, en_pos_2, en_pos_2-en_pos) +
-                        'en_neg=[{:9.4f}, {:9.4f}, {:9.4f}], '.format(en_neg, en_neg_2, en_neg_2-en_neg) +
-                        '|grad_g|={:8.2f}, '.format(grad_norm_g) +
-                        '|grad_e|={:8.2f}, '.format(grad_norm_e) +
-                        '|z_g_grad|={:7.3f}, '.format(z_g_grad_norm) +
-                        '|z_e_grad|={:7.3f}, '.format(z_e_grad_norm) +
-                        '|z_e_k_grad|={:7.3f}, '.format(z_e_k_grad_norm) +
-                        '|z_g_0|={:6.2f}, '.format(z_g_0.view(batch_size, -1).norm(dim=1).mean()) +
-                        '|z_g_k|={:6.2f}, '.format(z_g_k.view(batch_size, -1).norm(dim=1).mean()) +
-                        '|z_e_0|={:6.2f}, '.format(z_e_0.view(batch_size, -1).norm(dim=1).mean()) +
-                        '|z_e_k|={:6.2f}, '.format(z_e_k.view(batch_size, -1).norm(dim=1).mean()) +
-                        'z_e_disp={:6.2f}, '.format((z_e_k-z_e_0).view(batch_size, -1).norm(dim=1).mean()) +
-                        'z_g_disp={:6.2f}, '.format((z_g_k-z_g_0).view(batch_size, -1).norm(dim=1).mean()) +
-                        'x_e_disp={:6.2f}, '.format((x_k-x_0).view(batch_size, -1).norm(dim=1).mean()) +
-                        'prior_moments={}, '.format(prior_moments) +
-                        'posterior_moments={}, '.format(posterior_moments) +
-                        'fid={:8.2f}, '.format(fid) +
-                        'fid_best={:8.2f}'.format(fid_best))
-
-        # Schedule
-        lr_scheduleE.step(epoch=epoch)
-        lr_scheduleG.step(epoch=epoch)
-
-        # Stats
-        if epoch % args.n_stats == 0:
-            stats['loss_g'].append(loss_g.item())
-            stats['loss_e'].append(loss_e.item())
-            stats['en_neg'].append(en_neg.data.item())
-            stats['en_pos'].append(en_pos.data.item())
-            stats['grad_norm_g'].append(grad_norm_g)
-            stats['grad_norm_e'].append(grad_norm_e)
-            stats['z_g_grad_norm'].append(z_g_grad_norm.item())
-            stats['z_e_grad_norm'].append(z_e_grad_norm.item())
-            stats['z_e_k_grad_norm'].append(z_e_k_grad_norm.item())
-            stats['fid'].append(fid)
-            interval.append(epoch + 1)
-            plot_stats(output_dir, stats, interval)
-
-        # Metrics
-        if epoch > 0 and epoch % args.n_metrics == 0:
-            fid = get_fid(n=args.n_fid_samples)
-            if fid < fid_best:
-                fid_best = fid
-            logger.info('fid={}'.format(fid))
-
-        # Plot
-        if epoch % args.n_plot == 0:
-
+            x = next(iterator)[0]
+    # for epoch in range(args.n_epochs):
+        # for i, (x, y) in enumerate(dataloader_train, 0):
+        if i % 200 == 0:
+            logger.info("Plot images at epoch {} step {} in dir {}".format(epoch, i, output_dir))
             batch_size_fixed = x_fixed.shape[0]
+            print(x_fixed.shape)
 
             z_g_0 = sample_p_0(n=batch_size_fixed)
             z_e_0 = sample_p_0(n=batch_size_fixed)
@@ -809,27 +673,213 @@ def train(args_job, output_dir_job, output_dir, return_dict):
                 plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_k.png'.format(output_dir, epoch, i), netG(z_e_k))
                 plot('{}/samples/{:>06d}_{:>06d}_x_z_fixed.png'.format(output_dir, epoch, i), netG(z_fixed))
 
-        # Ckpt
-        if epoch > 0 and epoch % args.n_ckpt == 0:
-            save_dict = {
-                'epoch': epoch,
-                'netE': netE.state_dict(),
-                'optE': optE.state_dict(),
-                'netG': netG.state_dict(),
-                'optG': optG.state_dict(),
+            if args.nz == 2:
+                logger.info("Plot contour at epoch {} step {} in dir {}".format(epoch, i, output_dir))
+
+                
+                z_g_0_aux = sample_p_0(n=1000)
+                z_e_0_aux = sample_p_0(n=1000)
+
+                z_g_k_aux, z_g_grad_norm_aux, z_e_grad_norm_aux = sample_langevin_post_z(Variable(z_g_0_aux), x_fixed_larged, netG, netE)
+                z_e_k_aux, z_e_k_aux_grad_norm = sample_langevin_prior_z(Variable(z_e_0_aux), netE)
+
+
+
+                with torch.no_grad():
+                    energy_list_small_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-3, max_x=3,)
+
+                    samples_aux = cut_samples(z_e_0_aux, min_x=-3, max_x=3)
+                    plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution SC")
+                    
+                    samples_aux = cut_samples(z_e_k_aux, min_x=-3, max_x=3)
+                    plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior SC")
+
+                    samples_aux = cut_samples(z_g_k_aux, min_x=-3, max_x=3)
+                    plot_contour(samples_aux, energy_list_small_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior SC")
+
+
+                    energy_list_large_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-10, max_x=10)
+                    samples_aux = cut_samples(z_e_0_aux, min_x=-10, max_x=10)
+                    plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution LC")
+                    
+                    samples_aux = cut_samples(z_e_k_aux, min_x=-10, max_x=10)
+                    plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior LC")
+
+                    samples_aux = cut_samples(z_g_k_aux, min_x=-10, max_x=10)
+                    plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior LC")
+
+
+                    energy_list_large_scale, energy_list_names, scale_x, scale_y = get_all_energies(energy=netE, min_x=-30, max_x=30)
+                    samples_aux = cut_samples(z_e_0_aux, min_x=-30, max_x=30)
+                    plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Base Distribution XLC")
+                    
+                    samples_aux = cut_samples(z_e_k_aux, min_x=-30, max_x=30)
+                    plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Prior XLC")
+
+                    samples_aux = cut_samples(z_g_k_aux, min_x=-30, max_x=30)
+                    plot_contour(samples_aux, energy_list_large_scale, energy_list_names, scale_x, scale_y, step=i, epoch=epoch,logdir=output_dir, title="Latent Posterior XLC")
+
+
+                        
+                    
+
+        train_flag()
+
+        x = x.to(device)
+        batch_size = x.shape[0]
+
+        # Initialize chains
+        z_g_0 = sample_p_0(n=batch_size)
+        z_e_0 = sample_p_0(n=batch_size)
+
+        # Langevin posterior and prior
+        z_g_k, z_g_grad_norm, z_e_grad_norm = sample_langevin_post_z(Variable(z_g_0), x, netG, netE, verbose=(i==0))
+        z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE, verbose=(i==0))
+
+
+        z_e_0_norm = z_e_0.detach().norm(dim=1).mean()
+        z_e_k_norm = z_e_k.detach().norm(dim=1).mean()
+        z_g_k_norm = z_g_k.detach().norm(dim=1).mean()
+        if i%10 == 0 :
+            logger_res.log(step=i, data = {"z_e_0_norm": z_e_0_norm}) 
+            logger_res.log(step=i, data = {"z_e_k_norm": z_e_k_norm})
+            logger_res.log(step=i, data = {"z_g_k_norm": z_g_k_norm})
+            logger_res.log(step=i, data = {"z_e_k_grad_norm_e": z_e_k_aux_grad_norm})
+            logger_res.log(step=i, data = {"z_g_k_grad_norm_g": z_g_grad_norm})
+            logger_res.log(step=i, data = {"z_g_k_grad_norm_e": z_e_grad_norm})
+            logger_res.log(step=i, data = {"lr_e": lr_scheduleE.get_last_lr()})
+            logger_res.log(step=i, data = {"lr_g": lr_scheduleG.get_last_lr()})
+
+        # Learn generator
+        optG.zero_grad()
+        x_hat = netG(z_g_k.detach())
+        loss_g = mse(x_hat, x) / batch_size
+        loss_g.backward()
+        grad_norm_g = get_grad_norm(netG.parameters())
+        if args.g_is_grad_clamp:
+            assert False
+            torch.nn.utils.clip_grad_norm(netG.parameters(), opt.g_max_norm)
+        optG.step()
+
+        # Learn prior EBM
+        optE.zero_grad()
+        en_neg = energy(netE(z_e_k.detach())).mean() # TODO(nijkamp): why mean() here and in Langevin sum() over energy? constant is absorbed into Adam adaptive lr
+        en_pos = energy(netE(z_g_k.detach())).mean()
+        loss_e = en_pos - en_neg
+        loss_e.backward()
+        grad_norm_e = get_grad_norm(netE.parameters())
+        if args.e_is_grad_clamp:
+            assert False
+            torch.nn.utils.clip_grad_norm_(netE.parameters(), args.e_max_norm)
+        optE.step()
+
+
+        if i % 10 == 0:
+            dic = {
+                "loss_g":loss_g.item(),
+                "loss_e":loss_e.item(),
+                "en_pos":en_pos.item(),
+                "en_neg":en_neg.item(),
             }
-            torch.save(save_dict, '{}/ckpt/ckpt_{:>06d}.pth'.format(output_dir, epoch))
+            for key, value in dic.items():
+                logger_res.log({key:value})
+        # Printout
+        if i % args.n_printout == 0:
+            with torch.no_grad():
+                x_0 = netG(z_e_0)
+                x_k = netG(z_e_k)
 
-        # Early exit
-        # if epoch > 10 and loss_g > 300:
-            # logger.info('early exit condition 1: epoch > 10 and loss_g > 300')
-            # return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
-            # return
+                en_neg_2 = energy(netE(z_e_k)).mean()
+                en_pos_2 = energy(netE(z_g_k)).mean()
 
-        # if epoch > 40 and fid > 100:
-        #     logger.info('early exit condition 2: epoch > 40 and fid > 100')
-        #     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
-        #     return
+                prior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_e_k.mean(), z_e_k.std(), z_e_k.abs().max())
+                posterior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_g_k.mean(), z_g_k.std(), z_g_k.abs().max())
+
+                logger.info('{} {:5d}/{:5d} {:5d}/{:5d} '.format(job_id, epoch, args.n_epochs, i, len(dataloader_train)) +
+                    'loss_g={:8.3f}, '.format(loss_g) +
+                    'loss_e={:8.3f}, '.format(loss_e) +
+                    'en_pos=[{:9.4f}, {:9.4f}, {:9.4f}], '.format(en_pos, en_pos_2, en_pos_2-en_pos) +
+                    'en_neg=[{:9.4f}, {:9.4f}, {:9.4f}], '.format(en_neg, en_neg_2, en_neg_2-en_neg) +
+                    '|grad_g|={:8.2f}, '.format(grad_norm_g) +
+                    '|grad_e|={:8.2f}, '.format(grad_norm_e) +
+                    '|z_g_grad|={:7.3f}, '.format(z_g_grad_norm) +
+                    '|z_e_grad|={:7.3f}, '.format(z_e_grad_norm) +
+                    '|z_e_k_grad|={:7.3f}, '.format(z_e_k_grad_norm) +
+                    '|z_g_0|={:6.2f}, '.format(z_g_0.view(batch_size, -1).norm(dim=1).mean()) +
+                    '|z_g_k|={:6.2f}, '.format(z_g_k.view(batch_size, -1).norm(dim=1).mean()) +
+                    '|z_e_0|={:6.2f}, '.format(z_e_0.view(batch_size, -1).norm(dim=1).mean()) +
+                    '|z_e_k|={:6.2f}, '.format(z_e_k.view(batch_size, -1).norm(dim=1).mean()) +
+                    'z_e_disp={:6.2f}, '.format((z_e_k-z_e_0).view(batch_size, -1).norm(dim=1).mean()) +
+                    'z_g_disp={:6.2f}, '.format((z_g_k-z_g_0).view(batch_size, -1).norm(dim=1).mean()) +
+                    'x_e_disp={:6.2f}, '.format((x_k-x_0).view(batch_size, -1).norm(dim=1).mean()) +
+                    'prior_moments={}, '.format(prior_moments) +
+                    'posterior_moments={}, '.format(posterior_moments) +
+                    'fid={:8.2f}, '.format(fid) +
+                    'fid_best={:8.2f}'.format(fid_best))
+
+        if end_epoch :
+            # Stats
+            if epoch % args.n_stats == 0:
+                stats['loss_g'].append(loss_g.item())
+                stats['loss_e'].append(loss_e.item())
+                stats['en_neg'].append(en_neg.data.item())
+                stats['en_pos'].append(en_pos.data.item())
+                stats['grad_norm_g'].append(grad_norm_g)
+                stats['grad_norm_e'].append(grad_norm_e)
+                stats['z_g_grad_norm'].append(z_g_grad_norm.item())
+                stats['z_e_grad_norm'].append(z_e_grad_norm.item())
+                stats['z_e_k_grad_norm'].append(z_e_k_grad_norm.item())
+                stats['fid'].append(fid)
+
+                interval.append(epoch + 1)
+                plot_stats(output_dir, stats, interval)
+
+            # Metrics
+            if epoch > 0 and epoch % args.n_metrics == 0:
+                fid = get_fid(n=args.n_fid_samples)
+                if fid < fid_best:
+                    fid_best = fid
+                logger.info('fid={}'.format(fid))
+
+            # Plot
+            if epoch % args.n_plot == 0:
+
+                batch_size_fixed = x_fixed.shape[0]
+
+                z_g_0 = sample_p_0(n=batch_size_fixed)
+                z_e_0 = sample_p_0(n=batch_size_fixed)
+
+                z_g_k, z_g_grad_norm, z_e_grad_norm = sample_langevin_post_z(Variable(z_g_0), x_fixed, netG, netE)
+                z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE)
+
+                with torch.no_grad():
+                    plot('{}/samples/{:>06d}_{:>06d}_x_pos_fixed.png'.format(output_dir, epoch, i), x_fixed)
+                    plot('{}/samples/{:>06d}_{:>06d}_x_z_pos.png'.format(output_dir, epoch, i), netG(z_g_k))
+                    plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_0.png'.format(output_dir, epoch, i), netG(z_e_0))
+                    plot('{}/samples/{:>06d}_{:>06d}_x_z_neg_k.png'.format(output_dir, epoch, i), netG(z_e_k))
+                    plot('{}/samples/{:>06d}_{:>06d}_x_z_fixed.png'.format(output_dir, epoch, i), netG(z_fixed))
+
+            # Ckpt
+            if epoch > 0 and epoch % args.n_ckpt == 0:
+                save_dict = {
+                    'epoch': epoch,
+                    'netE': netE.state_dict(),
+                    'optE': optE.state_dict(),
+                    'netG': netG.state_dict(),
+                    'optG': optG.state_dict(),
+                }
+                torch.save(save_dict, '{}/ckpt/ckpt_{:>06d}.pth'.format(output_dir, epoch))
+
+            # Early exit
+            # if epoch > 10 and loss_g > 300:
+                # logger.info('early exit condition 1: epoch > 10 and loss_g > 300')
+                # return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
+                # return
+
+            # if epoch > 40 and fid > 100:
+            #     logger.info('early exit condition 2: epoch > 40 and fid > 100')
+            #     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
+            #     return
 
     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
     logger.info('done')
